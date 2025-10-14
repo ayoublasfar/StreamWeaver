@@ -1,9 +1,15 @@
 package com.streamweaver;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.streamweaver.entity.MessageMetadata;
+import com.streamweaver.entity.SchemaVersion;
+import com.streamweaver.repository.MessageMetadataRepository;
+import com.streamweaver.repository.SchemaVersionRepository;
+import com.streamweaver.service.SchemaRegistryService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
@@ -18,18 +24,17 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.stereotype.Service;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @SpringBootApplication
@@ -40,6 +45,8 @@ public class StreamWeaverApplication {
     public static void main(String[] args) {
         SpringApplication.run(StreamWeaverApplication.class, args);
         log.info("🚀 StreamWeaver Application Started Successfully!");
+        log.info("📊 PostgreSQL Integration: ACTIVE");
+        log.info("🔧 Schema Registry Integration: ACTIVE");
     }
 }
 
@@ -92,20 +99,69 @@ class KafkaConsumerService {
 
     @Autowired
     private KafkaTemplate<String, String> kafkaTemplate;
+    
+    @Autowired
+    private MessageMetadataRepository messageMetadataRepository;
+    
+    @Autowired
+    private SchemaRegistryService schemaRegistryService;
+    
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @KafkaListener(topics = "raw-data", groupId = "streamweaver-group")
     public void consumeRawData(ConsumerRecord<String, String> record) {
+        long startTime = System.currentTimeMillis();
+        
         try {
             log.info("📨 Received message: key={}, partition={}, offset={}", 
                      record.key(), record.partition(), record.offset());
             log.info("📝 Message content: {}", record.value());
 
-            // Process and normalize
+            // Extract metadata from message
+            String serviceName = extractServiceName(record.value());
+            String logLevel = extractLogLevel(record.value());
+            
+            // Infer and check schema
+            String currentSchema = schemaRegistryService.inferSchema(record.value());
+            String subject = serviceName != null ? serviceName + "-schema" : "default-schema";
+            
+            boolean schemaDriftDetected = schemaRegistryService.detectSchemaDrift(subject, currentSchema);
+            
+            // Register new schema version if drift detected
+            SchemaVersion schemaVersion = null;
+            if (schemaDriftDetected) {
+                schemaVersion = schemaRegistryService.registerSchema(subject, currentSchema, "ayoublasfar");
+            }
+            
+            // Normalize data
             String normalized = normalizeData(record.value());
+            
+            // Calculate processing time
+            long processingTime = System.currentTimeMillis() - startTime;
+            
+            // Save to PostgreSQL
+            MessageMetadata metadata = MessageMetadata.builder()
+                .messageKey(record.key())
+                .topic(record.topic())
+                .partition(record.partition())
+                .offset(record.offset())
+                .rawMessage(record.value())
+                .normalizedMessage(normalized)
+                .serviceName(serviceName)
+                .logLevel(logLevel)
+                .schemaVersion(schemaVersion != null ? schemaVersion.getVersion().toString() : "1")
+                .schemaId(schemaVersion != null ? schemaVersion.getSchemaId() : null)
+                .processingTimeMs(processingTime)
+                .processedAt(Instant.now())
+                .createdBy("ayoublasfar")
+                .build();
+            
+            MessageMetadata saved = messageMetadataRepository.save(metadata);
+            log.info("💾 Saved to PostgreSQL with ID: {}", saved.getId());
             
             // Send to normalized topic
             kafkaTemplate.send("normalized-data", normalized);
-            log.info("✅ Normalized and forwarded message");
+            log.info("✅ Normalized and forwarded message ({}ms)", processingTime);
             
         } catch (Exception e) {
             log.error("❌ Error processing message: {}", e.getMessage(), e);
@@ -113,9 +169,32 @@ class KafkaConsumerService {
     }
 
     private String normalizeData(String rawData) {
-        // Simple normalization: add timestamp and metadata
         return String.format("{\"data\":%s,\"normalized_at\":\"%s\",\"version\":\"1.0\"}", 
                            rawData, Instant.now());
+    }
+    
+    private String extractServiceName(String message) {
+        try {
+            JsonNode node = objectMapper.readTree(message);
+            if (node.has("service")) return node.get("service").asText();
+            if (node.has("service_name")) return node.get("service_name").asText();
+            if (node.has("application")) return node.get("application").asText();
+        } catch (Exception e) {
+            // Ignore
+        }
+        return "unknown";
+    }
+    
+    private String extractLogLevel(String message) {
+        try {
+            JsonNode node = objectMapper.readTree(message);
+            if (node.has("level")) return node.get("level").asText();
+            if (node.has("log_level")) return node.get("log_level").asText();
+            if (node.has("severity")) return node.get("severity").asText();
+        } catch (Exception e) {
+            // Ignore
+        }
+        return "INFO";
     }
 }
 
@@ -126,13 +205,27 @@ class StreamWeaverController {
 
     @Autowired
     private KafkaTemplate<String, String> kafkaTemplate;
+    
+    @Autowired
+    private MessageMetadataRepository messageMetadataRepository;
+    
+    @Autowired
+    private SchemaVersionRepository schemaVersionRepository;
+    
+    @Autowired
+    private SchemaRegistryService schemaRegistryService;
 
     @GetMapping("/health")
-    public Map<String, String> health() {
-        Map<String, String> response = new HashMap<>();
+    public Map<String, Object> health() {
+        Map<String, Object> response = new HashMap<>();
         response.put("status", "UP");
         response.put("application", "StreamWeaver");
         response.put("timestamp", Instant.now().toString());
+        response.put("features", Map.of(
+            "postgresql", "ACTIVE",
+            "schema_registry", "ACTIVE",
+            "kafka", "ACTIVE"
+        ));
         return response;
     }
 
@@ -155,5 +248,58 @@ class StreamWeaverController {
             response.put("message", e.getMessage());
             return response;
         }
+    }
+    
+    // ============== PostgreSQL Endpoints ==============
+    
+    @GetMapping("/api/messages")
+    public List<MessageMetadata> getAllMessages() {
+        return messageMetadataRepository.findAll();
+    }
+    
+    @GetMapping("/api/messages/topic/{topic}")
+    public List<MessageMetadata> getMessagesByTopic(@PathVariable String topic) {
+        return messageMetadataRepository.findByTopic(topic);
+    }
+    
+    @GetMapping("/api/messages/service/{service}")
+    public List<MessageMetadata> getMessagesByService(@PathVariable String service) {
+        return messageMetadataRepository.findByServiceName(service);
+    }
+    
+    @GetMapping("/api/messages/level/{level}")
+    public List<MessageMetadata> getMessagesByLevel(@PathVariable String level) {
+        return messageMetadataRepository.findByLogLevel(level);
+    }
+    
+    @GetMapping("/api/stats/topic/{topic}")
+    public Map<String, Object> getTopicStats(@PathVariable String topic) {
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("topic", topic);
+        stats.put("total_messages", messageMetadataRepository.countByTopic(topic));
+        stats.put("avg_processing_time_ms", messageMetadataRepository.averageProcessingTime(topic));
+        return stats;
+    }
+    
+    // ============== Schema Registry Endpoints ==============
+    
+    @GetMapping("/api/schemas")
+    public List<SchemaVersion> getAllSchemas() {
+        return schemaVersionRepository.findAll();
+    }
+    
+    @GetMapping("/api/schemas/subject/{subject}")
+    public List<SchemaVersion> getSchemasBySubject(@PathVariable String subject) {
+        return schemaVersionRepository.findBySubject(subject);
+    }
+    
+    @GetMapping("/api/schemas/active")
+    public List<SchemaVersion> getActiveSchemas() {
+        return schemaVersionRepository.findByIsActive(true);
+    }
+    
+    @GetMapping("/api/schemas/registry/subjects")
+    public List<String> getRegistrySubjects() {
+        return schemaRegistryService.getAllSubjects();
     }
 }
