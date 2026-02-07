@@ -159,3 +159,50 @@ The platform is designed for:
 - [ ] Advanced query optimization for hybrid workloads
 - [ ] Multi-cloud deployment templates
 - [ ] Real-time data quality scoring
+
+---
+
+## ✨ Recent Improvements
+
+StreamWeaver has been enhanced with several production-ready improvements:
+
+### Code Quality & Maintainability
+- ✅ Added comprehensive `.gitignore` for Maven/Java projects
+- ✅ Removed hard-coded values, replaced with configuration
+- ✅ Proper package organization and code structure
+- ✅ Added unit tests for critical components
+
+### API & Documentation
+- ✅ Full Swagger/OpenAPI documentation at `/swagger-ui.html`
+- ✅ Input validation with DTOs and JSR-303 annotations
+- ✅ Consistent API responses with `ApiResponse<T>` wrapper
+- ✅ Comprehensive error handling with `GlobalExceptionHandler`
+
+### Features & Reliability
+- ✅ Enhanced schema inference with nested object support
+- ✅ Retry mechanism for external service calls (exponential backoff)
+- ✅ Improved logging with proper log levels
+- ✅ JSON validation before processing
+
+See [IMPROVEMENTS.md](IMPROVEMENTS.md) for detailed documentation of all changes.
+
+---
+
+## 📖 API Documentation
+
+After starting the application, access the interactive API documentation at:
+- **Swagger UI**: http://localhost:8088/swagger-ui.html
+- **OpenAPI JSON**: http://localhost:8088/api-docs
+
+### Key Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Application health check |
+| `/produce` | POST | Send message to Kafka |
+| `/api/messages` | GET | Retrieve all messages |
+| `/api/messages/topic/{topic}` | GET | Get messages by topic |
+| `/api/schemas` | GET | Retrieve all schemas |
+| `/api/stats/topic/{topic}` | GET | Get topic statistics |
+
+---

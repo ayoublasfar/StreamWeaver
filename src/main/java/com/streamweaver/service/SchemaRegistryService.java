@@ -7,7 +7,10 @@ import com.streamweaver.repository.SchemaVersionRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.retry.annotation.Backoff;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.*;
@@ -136,12 +139,18 @@ public class SchemaRegistryService {
     }
     
     /**
-     * Get all schemas from Schema Registry
+     * Get all schemas from Schema Registry with retry logic
      */
+    @Retryable(
+        retryFor = {RestClientException.class},
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2)
+    )
     public List<String> getAllSubjects() {
         try {
             String url = schemaRegistryUrl + "/subjects";
             String[] subjects = restTemplate.getForObject(url, String[].class);
+            log.info("✅ Retrieved {} subjects from Schema Registry", subjects != null ? subjects.length : 0);
             return subjects != null ? Arrays.asList(subjects) : Collections.emptyList();
             
         } catch (Exception e) {
@@ -151,13 +160,19 @@ public class SchemaRegistryService {
     }
     
     /**
-     * Get schema by subject and version from Schema Registry
+     * Get schema by subject and version from Schema Registry with retry logic
      */
+    @Retryable(
+        retryFor = {RestClientException.class},
+        maxAttempts = 3,
+        backoff = @Backoff(delay = 1000, multiplier = 2)
+    )
     public String getSchemaFromRegistry(String subject, int version) {
         try {
             String url = String.format("%s/subjects/%s/versions/%d", 
                 schemaRegistryUrl, subject, version);
             String response = restTemplate.getForObject(url, String.class);
+            log.info("✅ Retrieved schema for subject: {}, version: {}", subject, version);
             return response;
             
         } catch (Exception e) {
