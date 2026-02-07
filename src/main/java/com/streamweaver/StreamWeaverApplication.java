@@ -135,7 +135,7 @@ class KafkaConsumerService {
         try {
             log.info("📨 Received message: key={}, partition={}, offset={}", 
                      record.key(), record.partition(), record.offset());
-            log.debug("📝 Message content: {}", record.value());
+            log.debug("Message content: {}", record.value());
 
             // Validate JSON format
             if (!isValidJson(record.value())) {
@@ -251,6 +251,8 @@ class StreamWeaverController {
     
     @Autowired
     private SchemaRegistryService schemaRegistryService;
+    
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @GetMapping("/health")
     @Operation(summary = "Health check", description = "Check the health status of the application")
@@ -273,9 +275,8 @@ class StreamWeaverController {
     public ApiResponse<Map<String, String>> produceMessage(@Valid @RequestBody MessageRequest request) {
         try {
             // Validate JSON format
-            ObjectMapper mapper = new ObjectMapper();
             try {
-                mapper.readTree(request.getContent());
+                objectMapper.readTree(request.getContent());
             } catch (Exception e) {
                 throw new IllegalArgumentException("Invalid JSON format in message content");
             }

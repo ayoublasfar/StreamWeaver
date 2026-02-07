@@ -61,7 +61,7 @@ public class SchemaRegistryService {
         if (node.isBoolean()) return "boolean";
         if (node.isNull()) return "null";
         if (node.isArray()) {
-            if (node.isEmpty()) return Map.of("type", "array", "items", "unknown");
+            if (node.isEmpty()) return Map.of("type", "array", "items", "any");
             // Infer type from first element
             return Map.of("type", "array", "items", inferTypeRecursive(node.get(0)));
         }

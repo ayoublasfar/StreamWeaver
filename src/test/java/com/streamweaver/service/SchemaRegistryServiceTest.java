@@ -1,7 +1,5 @@
 package com.streamweaver.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.streamweaver.entity.SchemaVersion;
 import com.streamweaver.repository.SchemaVersionRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,15 +26,8 @@ class SchemaRegistryServiceTest {
     @InjectMocks
     private SchemaRegistryService schemaRegistryService;
 
-    private ObjectMapper objectMapper;
-
-    @BeforeEach
-    void setUp() {
-        objectMapper = new ObjectMapper();
-    }
-
     @Test
-    void testInferSchema_SimpleObject() throws JsonProcessingException {
+    void testInferSchema_SimpleObject() {
         // Given
         String jsonMessage = "{\"name\":\"John\",\"age\":30,\"active\":true}";
         
@@ -52,7 +43,7 @@ class SchemaRegistryServiceTest {
     }
 
     @Test
-    void testInferSchema_NestedObject() throws JsonProcessingException {
+    void testInferSchema_NestedObject() {
         // Given
         String jsonMessage = "{\"user\":{\"id\":1,\"name\":\"John\"}}";
         
