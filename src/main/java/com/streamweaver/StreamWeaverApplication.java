@@ -1,15 +1,23 @@
 package com.streamweaver;
 
+import io.swagger.v3.oas.annotations.OpenAPIDefinition;
+import io.swagger.v3.oas.annotations.info.Info;
+import io.swagger.v3.oas.annotations.info.Contact;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.streamweaver.dto.ApiResponse;
+import com.streamweaver.dto.MessageRequest;
 import com.streamweaver.entity.MessageMetadata;
 import com.streamweaver.entity.SchemaVersion;
 import com.streamweaver.repository.MessageMetadataRepository;
 import com.streamweaver.repository.SchemaVersionRepository;
 import com.streamweaver.service.SchemaRegistryService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
@@ -24,14 +32,15 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.stereotype.Service;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
-import org.springframework.beans.factory.annotation.Value;
 
+import jakarta.validation.Valid;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -40,6 +49,14 @@ import java.util.Map;
 @SpringBootApplication
 @EnableKafka
 @Slf4j
+@OpenAPIDefinition(
+    info = @Info(
+        title = "StreamWeaver API",
+        version = "1.0.0",
+        description = "A Unified Real-Time Data Fabric for Intelligent Stream Integration",
+        contact = @Contact(name = "StreamWeaver Team", url = "https://github.com/ayoublasfar/StreamWeaver")
+    )
+)
 public class StreamWeaverApplication {
 
     public static void main(String[] args) {
@@ -106,6 +123,9 @@ class KafkaConsumerService {
     @Autowired
     private SchemaRegistryService schemaRegistryService;
     
+    @Value("${app.default-user}")
+    private String defaultUser;
+    
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @KafkaListener(topics = "raw-data", groupId = "streamweaver-group")
@@ -115,7 +135,13 @@ class KafkaConsumerService {
         try {
             log.info("📨 Received message: key={}, partition={}, offset={}", 
                      record.key(), record.partition(), record.offset());
-            log.info("📝 Message content: {}", record.value());
+            log.debug("📝 Message content: {}", record.value());
+
+            // Validate JSON format
+            if (!isValidJson(record.value())) {
+                log.error("❌ Invalid JSON format in message");
+                return;
+            }
 
             // Extract metadata from message
             String serviceName = extractServiceName(record.value());
@@ -130,7 +156,7 @@ class KafkaConsumerService {
             // Register new schema version if drift detected
             SchemaVersion schemaVersion = null;
             if (schemaDriftDetected) {
-                schemaVersion = schemaRegistryService.registerSchema(subject, currentSchema, "ayoublasfar");
+                schemaVersion = schemaRegistryService.registerSchema(subject, currentSchema, defaultUser);
             }
             
             // Normalize data
@@ -153,7 +179,7 @@ class KafkaConsumerService {
                 .schemaId(schemaVersion != null ? schemaVersion.getSchemaId() : null)
                 .processingTimeMs(processingTime)
                 .processedAt(Instant.now())
-                .createdBy("ayoublasfar")
+                .createdBy(defaultUser)
                 .build();
             
             MessageMetadata saved = messageMetadataRepository.save(metadata);
@@ -165,6 +191,15 @@ class KafkaConsumerService {
             
         } catch (Exception e) {
             log.error("❌ Error processing message: {}", e.getMessage(), e);
+        }
+    }
+    
+    private boolean isValidJson(String json) {
+        try {
+            objectMapper.readTree(json);
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -180,7 +215,7 @@ class KafkaConsumerService {
             if (node.has("service_name")) return node.get("service_name").asText();
             if (node.has("application")) return node.get("application").asText();
         } catch (Exception e) {
-            // Ignore
+            log.debug("Could not extract service name: {}", e.getMessage());
         }
         return "unknown";
     }
@@ -192,7 +227,7 @@ class KafkaConsumerService {
             if (node.has("log_level")) return node.get("log_level").asText();
             if (node.has("severity")) return node.get("severity").asText();
         } catch (Exception e) {
-            // Ignore
+            log.debug("Could not extract log level: {}", e.getMessage());
         }
         return "INFO";
     }
@@ -201,6 +236,8 @@ class KafkaConsumerService {
 // ============== REST Controller ==============
 @RestController
 @Slf4j
+@Validated
+@Tag(name = "StreamWeaver API", description = "Real-time data streaming and schema management endpoints")
 class StreamWeaverController {
 
     @Autowired
@@ -216,90 +253,119 @@ class StreamWeaverController {
     private SchemaRegistryService schemaRegistryService;
 
     @GetMapping("/health")
-    public Map<String, Object> health() {
-        Map<String, Object> response = new HashMap<>();
-        response.put("status", "UP");
-        response.put("application", "StreamWeaver");
-        response.put("timestamp", Instant.now().toString());
-        response.put("features", Map.of(
+    @Operation(summary = "Health check", description = "Check the health status of the application")
+    public ApiResponse<Map<String, Object>> health() {
+        Map<String, Object> features = Map.of(
             "postgresql", "ACTIVE",
             "schema_registry", "ACTIVE",
             "kafka", "ACTIVE"
-        ));
-        return response;
+        );
+        
+        Map<String, Object> data = new HashMap<>();
+        data.put("application", "StreamWeaver");
+        data.put("features", features);
+        
+        return ApiResponse.success("Application is healthy", data);
     }
 
     @PostMapping("/produce")
-    public Map<String, String> produceMessage(@RequestBody String message) {
+    @Operation(summary = "Produce message", description = "Send a message to the Kafka raw-data topic")
+    public ApiResponse<Map<String, String>> produceMessage(@Valid @RequestBody MessageRequest request) {
         try {
-            kafkaTemplate.send("raw-data", message);
-            log.info("📤 Message sent to raw-data topic: {}", message);
+            // Validate JSON format
+            ObjectMapper mapper = new ObjectMapper();
+            try {
+                mapper.readTree(request.getContent());
+            } catch (Exception e) {
+                throw new IllegalArgumentException("Invalid JSON format in message content");
+            }
             
-            Map<String, String> response = new HashMap<>();
-            response.put("status", "success");
-            response.put("message", "Data sent to Kafka");
-            response.put("topic", "raw-data");
-            return response;
+            String key = request.getKey() != null ? request.getKey() : "default-key";
+            kafkaTemplate.send("raw-data", key, request.getContent());
+            log.info("📤 Message sent to raw-data topic with key: {}", key);
             
+            Map<String, String> data = new HashMap<>();
+            data.put("topic", "raw-data");
+            data.put("key", key);
+            
+            return ApiResponse.success("Data sent to Kafka successfully", data);
+            
+        } catch (IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             log.error("❌ Error sending message: {}", e.getMessage(), e);
-            Map<String, String> response = new HashMap<>();
-            response.put("status", "error");
-            response.put("message", e.getMessage());
-            return response;
+            throw new RuntimeException("Failed to send message to Kafka: " + e.getMessage());
         }
     }
     
     // ============== PostgreSQL Endpoints ==============
     
     @GetMapping("/api/messages")
-    public List<MessageMetadata> getAllMessages() {
-        return messageMetadataRepository.findAll();
+    @Operation(summary = "Get all messages", description = "Retrieve all processed messages from the database")
+    public ApiResponse<List<MessageMetadata>> getAllMessages() {
+        List<MessageMetadata> messages = messageMetadataRepository.findAll();
+        return ApiResponse.success("Retrieved all messages", messages);
     }
     
     @GetMapping("/api/messages/topic/{topic}")
-    public List<MessageMetadata> getMessagesByTopic(@PathVariable String topic) {
-        return messageMetadataRepository.findByTopic(topic);
+    @Operation(summary = "Get messages by topic", description = "Retrieve messages filtered by Kafka topic")
+    public ApiResponse<List<MessageMetadata>> getMessagesByTopic(@PathVariable String topic) {
+        List<MessageMetadata> messages = messageMetadataRepository.findByTopic(topic);
+        return ApiResponse.success("Retrieved messages for topic: " + topic, messages);
     }
     
     @GetMapping("/api/messages/service/{service}")
-    public List<MessageMetadata> getMessagesByService(@PathVariable String service) {
-        return messageMetadataRepository.findByServiceName(service);
+    @Operation(summary = "Get messages by service", description = "Retrieve messages filtered by service name")
+    public ApiResponse<List<MessageMetadata>> getMessagesByService(@PathVariable String service) {
+        List<MessageMetadata> messages = messageMetadataRepository.findByServiceName(service);
+        return ApiResponse.success("Retrieved messages for service: " + service, messages);
     }
     
     @GetMapping("/api/messages/level/{level}")
-    public List<MessageMetadata> getMessagesByLevel(@PathVariable String level) {
-        return messageMetadataRepository.findByLogLevel(level);
+    @Operation(summary = "Get messages by log level", description = "Retrieve messages filtered by log level")
+    public ApiResponse<List<MessageMetadata>> getMessagesByLevel(@PathVariable String level) {
+        List<MessageMetadata> messages = messageMetadataRepository.findByLogLevel(level);
+        return ApiResponse.success("Retrieved messages for log level: " + level, messages);
     }
     
     @GetMapping("/api/stats/topic/{topic}")
-    public Map<String, Object> getTopicStats(@PathVariable String topic) {
+    @Operation(summary = "Get topic statistics", description = "Retrieve aggregated statistics for a specific topic")
+    public ApiResponse<Map<String, Object>> getTopicStats(@PathVariable String topic) {
         Map<String, Object> stats = new HashMap<>();
         stats.put("topic", topic);
         stats.put("total_messages", messageMetadataRepository.countByTopic(topic));
         stats.put("avg_processing_time_ms", messageMetadataRepository.averageProcessingTime(topic));
-        return stats;
+        
+        return ApiResponse.success("Retrieved statistics for topic: " + topic, stats);
     }
     
     // ============== Schema Registry Endpoints ==============
     
     @GetMapping("/api/schemas")
-    public List<SchemaVersion> getAllSchemas() {
-        return schemaVersionRepository.findAll();
+    @Operation(summary = "Get all schemas", description = "Retrieve all registered schema versions")
+    public ApiResponse<List<SchemaVersion>> getAllSchemas() {
+        List<SchemaVersion> schemas = schemaVersionRepository.findAll();
+        return ApiResponse.success("Retrieved all schemas", schemas);
     }
     
     @GetMapping("/api/schemas/subject/{subject}")
-    public List<SchemaVersion> getSchemasBySubject(@PathVariable String subject) {
-        return schemaVersionRepository.findBySubject(subject);
+    @Operation(summary = "Get schemas by subject", description = "Retrieve all schema versions for a specific subject")
+    public ApiResponse<List<SchemaVersion>> getSchemasBySubject(@PathVariable String subject) {
+        List<SchemaVersion> schemas = schemaVersionRepository.findBySubject(subject);
+        return ApiResponse.success("Retrieved schemas for subject: " + subject, schemas);
     }
     
     @GetMapping("/api/schemas/active")
-    public List<SchemaVersion> getActiveSchemas() {
-        return schemaVersionRepository.findByIsActive(true);
+    @Operation(summary = "Get active schemas", description = "Retrieve all currently active schema versions")
+    public ApiResponse<List<SchemaVersion>> getActiveSchemas() {
+        List<SchemaVersion> schemas = schemaVersionRepository.findByIsActive(true);
+        return ApiResponse.success("Retrieved active schemas", schemas);
     }
     
     @GetMapping("/api/schemas/registry/subjects")
-    public List<String> getRegistrySubjects() {
-        return schemaRegistryService.getAllSubjects();
+    @Operation(summary = "Get registry subjects", description = "Retrieve all subjects from the Schema Registry")
+    public ApiResponse<List<String>> getRegistrySubjects() {
+        List<String> subjects = schemaRegistryService.getAllSubjects();
+        return ApiResponse.success("Retrieved subjects from Schema Registry", subjects);
     }
 }

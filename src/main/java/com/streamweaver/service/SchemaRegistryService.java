@@ -27,17 +27,17 @@ public class SchemaRegistryService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     
     /**
-     * Infer JSON schema from message
+     * Infer JSON schema from message with support for nested objects
      */
     public String inferSchema(String jsonMessage) {
         try {
             JsonNode node = objectMapper.readTree(jsonMessage);
-            Map<String, String> schema = new LinkedHashMap<>();
+            Map<String, Object> schema = new LinkedHashMap<>();
             
             node.fields().forEachRemaining(entry -> {
                 String fieldName = entry.getKey();
                 JsonNode fieldValue = entry.getValue();
-                schema.put(fieldName, inferType(fieldValue));
+                schema.put(fieldName, inferTypeRecursive(fieldValue));
             });
             
             return objectMapper.writeValueAsString(schema);
@@ -46,6 +46,30 @@ public class SchemaRegistryService {
             log.error("Error inferring schema: {}", e.getMessage());
             return "{}";
         }
+    }
+    
+    /**
+     * Recursively infer type for nested structures
+     */
+    private Object inferTypeRecursive(JsonNode node) {
+        if (node.isInt()) return "integer";
+        if (node.isLong()) return "long";
+        if (node.isDouble() || node.isFloat()) return "double";
+        if (node.isBoolean()) return "boolean";
+        if (node.isNull()) return "null";
+        if (node.isArray()) {
+            if (node.isEmpty()) return Map.of("type", "array", "items", "unknown");
+            // Infer type from first element
+            return Map.of("type", "array", "items", inferTypeRecursive(node.get(0)));
+        }
+        if (node.isObject()) {
+            Map<String, Object> objectSchema = new LinkedHashMap<>();
+            node.fields().forEachRemaining(entry -> {
+                objectSchema.put(entry.getKey(), inferTypeRecursive(entry.getValue()));
+            });
+            return Map.of("type", "object", "properties", objectSchema);
+        }
+        return "string";
     }
     
     /**
@@ -140,15 +164,5 @@ public class SchemaRegistryService {
             log.error("Error fetching schema from registry: {}", e.getMessage());
             return null;
         }
-    }
-    
-    private String inferType(JsonNode node) {
-        if (node.isInt()) return "integer";
-        if (node.isLong()) return "long";
-        if (node.isDouble() || node.isFloat()) return "double";
-        if (node.isBoolean()) return "boolean";
-        if (node.isArray()) return "array";
-        if (node.isObject()) return "object";
-        return "string";
     }
 }
